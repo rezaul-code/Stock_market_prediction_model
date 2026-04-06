@@ -1,8 +1,13 @@
+import sys
+import os
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 from prediction.predict import predict_next_price
-from trading.signal import generate_signal
+from trading.trading_signal import generate_signal
 
 st.set_page_config(page_title="AI Trading Dashboard", layout="wide")
 
@@ -15,8 +20,10 @@ def load_data():
         st.stop()
 
 data = load_data()
+data['Close'] = data['Close'].astype(float)
 
 st.title("🤖 AI Trading System Dashboard")
+
 st.markdown("**Stock Prediction & Trading Signals**")
 
 # Sidebar
@@ -33,8 +40,9 @@ with col1:
     st.metric("Current Price", f"${current_price:.2f}")
 
 with col2:
-    next_price = predict_next_price()
+    next_price = float(predict_next_price())
     st.metric("Predicted Next Price", f"${next_price:.2f}", delta=f"{((next_price / current_price - 1)*100):+.1f}%")
+
 
 try:
     signal_data = generate_signal()

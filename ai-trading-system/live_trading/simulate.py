@@ -2,7 +2,7 @@ import time
 import pandas as pd
 import numpy as np
 import os
-from trading.signal import generate_signal
+from trading.trading_signal import generate_signal
 
 def simulate_live_trading():
     capital = 10000.0
