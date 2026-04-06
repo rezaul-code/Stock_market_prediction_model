@@ -1,11 +1,15 @@
-# AI Trading System - Add Technical Indicators TODO
+# AI Trading System Fix - Progress Tracker
 
-## Steps to Complete:
+## Approved Steps
 
-- [x] Step 1: Create `data/technical_indicators.py` with `add_indicators` function using pandas_ta_classic
-- [x] Step 2: Edit `data/stock_data.py` to import and use `add_indicators`, update print to tail()
-- [x] Step 3: Check/install pandas_ta_classic dependency (already installed)
-- [x] Step 4: Test execution and complete task
+- [x] Create TODO.md
+- [x] STEP 1: Create training/run_pipeline.py → generate data/processed_data.csv (complete, CSV generated)
+- [x] STEP 2: Update training/train_model.py (multi-features, save scaler.pkl, add metrics)
+- [x] STEP 3: Update prediction/predict.py (load scaler, multi-features)
+- [x] STEP 4: Update trading/signal.py (threshold 0.5%, confidence)
+- [x] STEP 5: Create dashboard/app.py (Streamlit dashboard)
+- [x] STEP 6: Create requirements.txt
+- [ ] STEP 7: Test all components
 
-Current progress will be updated after each step.
+**Next: Step 1**
 
