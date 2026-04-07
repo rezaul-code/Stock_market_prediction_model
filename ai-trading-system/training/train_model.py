@@ -24,7 +24,10 @@ def train_model():
         "RSI_14",
         "EMA_20",
         "SMA_50",
-        "Volume"
+        "Volume",
+        "MACD",
+        "ATR",
+        "Bollinger_Width"
     ]
     
     # Assuming the dataset has 'Close' price as target and previous prices/features
@@ -67,23 +70,36 @@ def train_model():
     
     print("Training model...")
     
-    # Create LSTM Model
+    # Create Upgraded LSTM Model
+    from tensorflow.keras.layers import Bidirectional, BatchNormalization
+    from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+    
     model = Sequential()
-    model.add(LSTM(units=50, return_sequences=True, input_shape=(X_train.shape[1], n_features)))
-    model.add(Dropout(0.2))
+    model.add(Bidirectional(LSTM(units=50, return_sequences=True), input_shape=(X_train.shape[1], n_features)))
+    model.add(BatchNormalization())
+    model.add(Dropout(0.3))
+    model.add(LSTM(units=50, return_sequences=True))
+    model.add(BatchNormalization())
+    model.add(Dropout(0.3))
     model.add(LSTM(units=50))
-    model.add(Dropout(0.2))
+    model.add(Dropout(0.3))
+    model.add(Dense(25, activation='relu'))
     model.add(Dense(1))
     
     # Compile model
     model.compile(optimizer='adam', loss='mean_squared_error')
     
-    # Train model
+    # Callbacks
+    early_stop = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+    lr_scheduler = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-7)
+    
+    # Train model with improvements
     history = model.fit(
         X_train, y_train,
-        epochs=20,
+        epochs=100,
         batch_size=32,
         validation_data=(X_test, y_test),
+        callbacks=[early_stop, lr_scheduler],
         verbose=1
     )
     
@@ -104,6 +120,17 @@ def train_model():
     print(f"MAE: {mae:.2f}")
     print(f"RMSE: {rmse:.2f}")
     print(f"MSE: {mse:.2f}")
+    
+    # Save metrics
+    metrics = {
+        'MAE': float(mae),
+        'RMSE': float(rmse),
+        'MSE': float(mse)
+    }
+    import json
+    with open('models/metrics.json', 'w') as f:
+        json.dump(metrics, f, indent=4)
+    print("Metrics saved to models/metrics.json")
     
     print("Saving model...")
     

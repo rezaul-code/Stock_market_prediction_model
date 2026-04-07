@@ -25,13 +25,16 @@ def prepare_data(df):
     # Drop last row (NaN target)
     df = df.dropna()
 
-    # Feature columns
+    # Feature columns - UPGRADED for better accuracy
     feature_columns = [
         "Close",
         "RSI_14",
         "EMA_20",
         "SMA_50",
-        "Volume"
+        "Volume",
+        "MACD",
+        "ATR",
+        "Bollinger_Width"
     ]
 
     # Features and target

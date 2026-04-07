@@ -15,7 +15,7 @@ def get_stock_data(symbol="RELIANCE.NS", period="2y"):
         df.columns = df.columns.get_level_values(0)
 
     # Select required columns
-    df = df[['Close', 'Volume']]
+    df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
 
     # Reset index
     df.reset_index(inplace=True)
