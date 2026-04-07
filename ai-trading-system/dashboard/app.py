@@ -7,10 +7,15 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 CURRENCY = "₹"
 
-from prediction.predict import predict_next_price, predict_asset, predict_multi_timeframe
+from prediction.predict import predict_next_price, predict_asset
+from prediction.predict_multi_timeframe import predict_multi_timeframe
 from trading.trading_signal import generate_signal, generate_multi_signal
 from trading.profit_calculator import calculate_profit
 from config.assets import TOP_25_STOCKS, TOP_10_CRYPTO
@@ -19,245 +24,407 @@ from scanner.best_trade_scanner import scan_all
 
 st.set_page_config(page_title="AI Trading Dashboard", layout="wide")
 
-
-@st.cache_data
-def load_data():
-    try:
-        return pd.read_csv('data/processed_data.csv')
-    except FileNotFoundError:
-        st.error("Run `python training/run_pipeline.py` first!")
-        st.stop()
-
-
+# Cache functions with longer TTL for better performance
 @st.cache_data(ttl=300)
 def cached_fetch_data(symbol):
     df = fetch_asset_data(symbol)
     return df.tail(100)
 
-
 @st.cache_data(ttl=300)
 def cached_predict(symbol):
     return predict_asset(symbol)
-
 
 @st.cache_data(ttl=300)
 def cached_predict_multi(symbol):
     return predict_multi_timeframe(symbol)
 
-
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=120)
 def cached_scan():
     return scan_all()
 
+# Sidebar Controls
+st.sidebar.header("🎮 Controls")
 
-data = load_data()
-data['Close'] = data['Close'].astype(float)
+if st.sidebar.button("🔄 Refresh All Data"):
+    st.cache_data.clear()
+    st.rerun()
 
-# Ensure required indicators exist
-if 'EMA_20' not in data.columns:
-    data['EMA_20'] = data['Close'].ewm(span=20, adjust=False).mean()
-if 'SMA_50' not in data.columns:
-    data['SMA_50'] = data['Close'].rolling(window=50).mean()
-if 'RSI_14' not in data.columns:
-    delta = data['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss
-    data['RSI_14'] = 100 - (100 / (1 + rs))
+if st.sidebar.button("🔍 Re-scan Markets"):
+    st.cache_data.clear()
+    st.rerun()
 
 st.title("🤖 AI Trading System Dashboard")
+st.markdown("*Multi-Asset Trading Predictions with Ensemble ML*")
 
-st.markdown("**Stock Prediction & Trading Signals**")
-
-# Sidebar
-st.sidebar.header("Controls")
-
-if st.sidebar.button("🔄 Refresh All"):
-    st.cache_data.clear()
-    st.rerun()
-
-if st.sidebar.button("🔍 Scan Now (Clear Scan Cache)"):
-    st.cache_data.clear()
-    st.rerun()
-
-# Metrics
-col1, col2, col3 = st.columns(3)
-
-current_price = data['Close'].iloc[-1]
-
-with col1:
-    st.metric("Current Price", f"{CURRENCY}{current_price:.2f}")
-
-with col2:
-    next_price = float(predict_next_price())
-    st.metric(
-        "Predicted Next Price",
-        f"{CURRENCY}{next_price:.2f}",
-        delta=f"{((next_price / current_price - 1)*100):+.1f}%"
-    )
-
-try:
-    signal_data = generate_signal()
-
-    with col3:
-        st.metric("Signal", signal_data['signal'], delta=signal_data['confidence'])
-
-    st.success(
-        f"**Trading Signal: {signal_data['signal']}** "
-        f"(Confidence: {signal_data['confidence']})"
-    )
-
-except:
-    st.warning("Run `python training/train_model.py` first!")
-
-
-st.subheader("📊 Feature Overview (Latest)")
-
-latest = data.iloc[-1]
-
-chart_data = {
-    'Close': latest.get('Close', 0),
-    'RSI_14': latest.get('RSI_14', 50),
-    'EMA_20': latest.get('EMA_20', 0),
-    'SMA_50': latest.get('SMA_50', 0),
-    'Volume': latest.get('Volume', 0) / 1e6
-}
-st.bar_chart(chart_data)
-
-# -------------------------------
-# MULTI ASSET DASHBOARD
-# -------------------------------
-
-st.markdown("---")
+# Main Dashboard
 st.markdown("## 🌟 Multi-Asset Trading Dashboard")
 
 tab1, tab2, tab3 = st.tabs(["📈 Stocks", "₿ Crypto", "🎯 Best Trades"])
 
-# -------------------------------
-# STOCK TAB
-# -------------------------------
-
+# ==========================================
+# TAB 1: STOCKS
+# ==========================================
 with tab1:
-
+    st.header("📈 Stock Analysis")
+    
     selected_stock = st.selectbox("Select Stock", TOP_25_STOCKS, key="stock_select")
-
+    
     if selected_stock:
-
-        col1, col2, col3 = st.columns(3)
-
-        df_stock = cached_fetch_data(selected_stock)
-
-        current_price_stock = df_stock['Close'].iloc[-1]
-
-        pred_price_stock = cached_predict(selected_stock)
-
-        sig_stock = generate_signal(current_price_stock, pred_price_stock)
-
-        with col1:
-            st.metric("Current Price", f"{CURRENCY}{current_price_stock:.2f}")
-
-        with col2:
-            st.metric(
-                "Predicted Price",
-                f"{CURRENCY}{pred_price_stock:.2f}",
-                delta=f"{((pred_price_stock / current_price_stock - 1)*100):+.1f}%"
-            )
-
-        with col3:
-            st.metric("Signal", sig_stock['signal'], delta=sig_stock['confidence'])
-
-        st.success(
-            f"**Signal: {sig_stock['signal']}** "
-            f"(Confidence: {sig_stock['confidence']})"
-        )
-
-        st.markdown("---")
-
-        st.subheader("📊 Multi Timeframe Prediction")
-
-        multi_preds = cached_predict_multi(selected_stock)
-
-        multi_sig = generate_multi_signal(multi_preds)
-
-        capital = st.number_input(
-            f"Capital ({CURRENCY})",
-            value=10000.0,
-            key="capital_stock"
-        )
-
-        st.markdown("**Predictions & Profits:**")
-
-        col1, col2, col3 = st.columns(3)
-
-        tfs = ['tomorrow', 'weekly', 'monthly', 'quarterly']
-        tf_names = ['Tomorrow', 'Weekly', 'Monthly', 'Quarterly']
-
-        for i, tf in enumerate(tfs):
-
-            pred = multi_preds[tf]
-
-            current = multi_preds['current_price']
-
-            pct = ((pred - current) / current) * 100
-
-            profit_info = calculate_profit(current, pred, capital)
-
+        try:
+            # Fetch data
+            df_stock = cached_fetch_data(selected_stock)
+            current_price_stock = df_stock['Close'].iloc[-1]
+            
+            # Predict
+            pred_price_stock = cached_predict(selected_stock)
+            sig_stock = generate_signal(current_price_stock, pred_price_stock)
+            
+            # Display key metrics
+            col1, col2, col3 = st.columns(3)
+            
             with col1:
-                st.metric(tf_names[i], f"{CURRENCY}{pred:.2f}", f"{pct:+.1f}%")
-
+                st.metric("📊 Current Price", f"{CURRENCY}{current_price_stock:.2f}")
+            
             with col2:
-                st.metric("Signal", multi_sig[f'{tf}_signal'])
-
-            with col3:
                 st.metric(
-                    "Profit",
-                    f"{CURRENCY}{profit_info['profit']:.0f}",
-                    delta=f"{profit_info['percent']:+.1f}%"
+                    "🎯 Predicted Price",
+                    f"{CURRENCY}{pred_price_stock:.2f}",
+                    delta=f"{((pred_price_stock / current_price_stock - 1)*100):+.1f}%"
                 )
-
-        # Graph
-
-        fig_stock = go.Figure()
-
-        fig_stock.add_trace(
-            go.Scatter(
-                x=df_stock.index,
-                y=df_stock['Close'],
-                mode='lines',
-                name='Historical',
-                line=dict(color='#4FC3F7')
+            
+            with col3:
+                color = "🟢" if sig_stock['signal'] == "BUY" else "🔴" if sig_stock['signal'] == "SELL" else "🟡"
+                st.metric(f"{color} Signal", sig_stock['signal'], delta=sig_stock['confidence'])
+            
+            st.success(f"**Signal: {sig_stock['signal']}** (Confidence: {sig_stock['confidence']})")
+            
+            st.markdown("---")
+            
+            # Multi-timeframe predictions
+            st.subheader("📊 Multi-Timeframe Predictions")
+            
+            multi_preds = cached_predict_multi(selected_stock)
+            multi_sig = generate_multi_signal(multi_preds)
+            
+            capital = st.number_input(
+                f"Capital ({CURRENCY})",
+                value=10000.0,
+                min_value=1000.0,
+                key="capital_stock"
             )
-        )
-
-        pred_x = [
-            df_stock.index[-1],
-int(df_stock.index[-1]) + 1
-        ]
-
-        pred_y = [
-            df_stock['Close'].iloc[-1],
-            pred_price_stock
-        ]
-
-        fig_stock.add_trace(
-            go.Scatter(
-                x=pred_x,
-                y=pred_y,
-                mode='lines+markers',
-                name='Prediction',
-                line=dict(color='#00E676', dash='dash', width=3)
+            
+            st.markdown("**Predictions by Timeframe:**")
+            
+            timeframes = [
+                ('tomorrow', 'Tomorrow (1 day)'),
+                ('weekly', 'Weekly (5 days)'),
+                ('monthly', 'Monthly (20 days)'),
+                ('quarterly', 'Quarterly (60 days)')
+            ]
+            
+            # Create columns for each timeframe
+            for tf_key, tf_label in timeframes:
+                col1, col2, col3, col4 = st.columns(4)
+                
+                pred = multi_preds[tf_key]
+                current = multi_preds['current_price']
+                pct = ((pred - current) / current) * 100
+                profit_info = calculate_profit(current, pred, capital)
+                
+                with col1:
+                    st.metric(
+                        tf_label,
+                        f"{CURRENCY}{pred:.2f}",
+                        delta=f"{pct:+.1f}%"
+                    )
+                
+                with col2:
+                    signal = multi_sig[f'{tf_key}_signal']
+                    color = "🟢" if signal == "BUY" else "🔴" if signal == "SELL" else "🟡"
+                    st.metric(f"{color} Signal", signal)
+                
+                with col3:
+                    st.metric(
+                        "Expected Profit",
+                        f"{CURRENCY}{profit_info['profit']:.0f}",
+                        delta=f"{profit_info['percent']:+.1f}%"
+                    )
+                
+                with col4:
+                    confidence = multi_sig[f'{tf_key}_confidence']
+                    st.text(f"Confidence:\n{confidence}")
+            
+            st.markdown("---")
+            
+            # Graph
+            st.subheader("📉 Historical vs Prediction")
+            
+            fig_stock = go.Figure()
+            
+            # Historical data
+            fig_stock.add_trace(
+                go.Scatter(
+                    x=df_stock.index,
+                    y=df_stock['Close'],
+                    mode='lines',
+                    name='Historical',
+                    line=dict(color='#4FC3F7', width=2)
+                )
             )
-        )
+            
+            # Prediction line
+            pred_x = [df_stock.index[-1], df_stock.index[-1] + 1]
+            pred_y = [df_stock['Close'].iloc[-1], pred_price_stock]
+            
+            fig_stock.add_trace(
+                go.Scatter(
+                    x=pred_x,
+                    y=pred_y,
+                    mode='lines+markers',
+                    name='Tomorrow Prediction',
+                    line=dict(color='#00E676', dash='dash', width=3),
+                    marker=dict(size=10)
+                )
+            )
+            
+            fig_stock.update_layout(
+                title=f"{selected_stock} - Price Analysis",
+                xaxis_title="Days",
+                yaxis_title=f"Price ({CURRENCY})",
+                template="plotly_dark",
+                hovermode='x unified',
+                height=400
+            )
+            
+            st.plotly_chart(fig_stock, use_container_width=True)
+            
+        except Exception as e:
+            st.error(f"❌ Error: {str(e)}")
 
-        fig_stock.update_layout(
-            title=f"{selected_stock} - Historical vs Prediction",
-            xaxis_title="Time",
-            yaxis_title=f"Price ({CURRENCY})",
-            template="plotly_dark"
-        )
+# ==========================================
+# TAB 2: CRYPTO
+# ==========================================
+with tab2:
+    st.header("₿ Cryptocurrency Analysis")
+    
+    selected_crypto = st.selectbox("Select Crypto", TOP_10_CRYPTO, key="crypto_select")
+    
+    if selected_crypto:
+        try:
+            # Fetch data
+            df_crypto = cached_fetch_data(selected_crypto)
+            current_price_crypto = df_crypto['Close'].iloc[-1]
+            
+            # Predict
+            pred_price_crypto = cached_predict(selected_crypto)
+            sig_crypto = generate_signal(current_price_crypto, pred_price_crypto)
+            
+            # Display key metrics
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("💹 Current Price", f"${current_price_crypto:.2f}")
+            
+            with col2:
+                st.metric(
+                    "🎯 Predicted Price",
+                    f"${pred_price_crypto:.2f}",
+                    delta=f"{((pred_price_crypto / current_price_crypto - 1)*100):+.1f}%"
+                )
+            
+            with col3:
+                color = "🟢" if sig_crypto['signal'] == "BUY" else "🔴" if sig_crypto['signal'] == "SELL" else "🟡"
+                st.metric(f"{color} Signal", sig_crypto['signal'], delta=sig_crypto['confidence'])
+            
+            st.info(f"**Signal: {sig_crypto['signal']}** (Confidence: {sig_crypto['confidence']})")
+            
+            st.markdown("---")
+            
+            # Multi-timeframe predictions for crypto
+            st.subheader("📊 Multi-Timeframe Predictions")
+            
+            multi_preds_crypto = cached_predict_multi(selected_crypto)
+            multi_sig_crypto = generate_multi_signal(multi_preds_crypto)
+            
+            capital = st.number_input(
+                "$USD Capital",
+                value=10000.0,
+                min_value=1000.0,
+                key="capital_crypto"
+            )
+            
+            st.markdown("**Predictions by Timeframe:**")
+            
+            for tf_key, tf_label in timeframes:
+                col1, col2, col3, col4 = st.columns(4)
+                
+                pred = multi_preds_crypto[tf_key]
+                current = multi_preds_crypto['current_price']
+                pct = ((pred - current) / current) * 100
+                profit_info = calculate_profit(current, pred, capital)
+                
+                with col1:
+                    st.metric(
+                        tf_label,
+                        f"${pred:.2f}",
+                        delta=f"{pct:+.1f}%"
+                    )
+                
+                with col2:
+                    signal = multi_sig_crypto[f'{tf_key}_signal']
+                    color = "🟢" if signal == "BUY" else "🔴" if signal == "SELL" else "🟡"
+                    st.metric(f"{color} Signal", signal)
+                
+                with col3:
+                    st.metric(
+                        "Expected Profit",
+                        f"${profit_info['profit']:.0f}",
+                        delta=f"{profit_info['percent']:+.1f}%"
+                    )
+                
+                with col4:
+                    confidence = multi_sig_crypto[f'{tf_key}_confidence']
+                    st.text(f"Confidence:\n{confidence}")
+            
+            st.markdown("---")
+            
+            # Graph
+            st.subheader("📉 Historical vs Prediction")
+            
+            fig_crypto = go.Figure()
+            
+            fig_crypto.add_trace(
+                go.Scatter(
+                    x=df_crypto.index,
+                    y=df_crypto['Close'],
+                    mode='lines',
+                    name='Historical',
+                    line=dict(color='#FFD700', width=2)
+                )
+            )
+            
+            pred_x_c = [df_crypto.index[-1], df_crypto.index[-1] + 1]
+            pred_y_c = [df_crypto['Close'].iloc[-1], pred_price_crypto]
+            
+            fig_crypto.add_trace(
+                go.Scatter(
+                    x=pred_x_c,
+                    y=pred_y_c,
+                    mode='lines+markers',
+                    name='Tomorrow Prediction',
+                    line=dict(color='#FF6B6B', dash='dash', width=3),
+                    marker=dict(size=10)
+                )
+            )
+            
+            fig_crypto.update_layout(
+                title=f"{selected_crypto} - Price Analysis",
+                xaxis_title="Days",
+                yaxis_title="Price (USD)",
+                template="plotly_dark",
+                hovermode='x unified',
+                height=400
+            )
+            
+            st.plotly_chart(fig_crypto, use_container_width=True)
+            
+        except Exception as e:
+            st.error(f"❌ Error: {str(e)}")
 
-        st.plotly_chart(fig_stock, use_container_width=True)
+# ==========================================
+# TAB 3: BEST TRADES
+# ==========================================
+with tab3:
+    st.header("🎯 Best Trade Opportunities")
+    st.markdown("*Scanning all assets for top opportunities...*")
+    
+    if st.button("🔍 Scan Now", key="scan_button"):
+        with st.spinner("🔄 Scanning markets..."):
+            try:
+                scan_results = cached_scan()
+                
+                if scan_results.empty:
+                    st.warning("⚠️ No trades found! Try refreshing the data.")
+                else:
+                    # Display statistics
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    buy_signals = len(scan_results[scan_results['Signal'] == 'BUY'])
+                    sell_signals = len(scan_results[scan_results['Signal'] == 'SELL'])
+                    hold_signals = len(scan_results[scan_results['Signal'] == 'HOLD'])
+                    total_profit = scan_results['Profit ₹'].sum()
+                    
+                    with col1:
+                        st.metric("🟢 BUY Signals", buy_signals)
+                    with col2:
+                        st.metric("🔴 SELL Signals", sell_signals)
+                    with col3:
+                        st.metric("🟡 HOLD Signals", hold_signals)
+                    with col4:
+                        st.metric("💰 Total Potential", f"₹{total_profit:.0f}")
+                    
+                    st.markdown("---")
+                    
+                    # Top BUY opportunities
+                    st.subheader("🟢 Top BUY Opportunities")
+                    
+                    buy_df = scan_results[scan_results['Signal'] == 'BUY'].head(5)
+                    if not buy_df.empty:
+                        for idx, row in buy_df.iterrows():
+                            col1, col2, col3, col4, col5 = st.columns(5)
+                            
+                            with col1:
+                                st.write(f"**{row['Asset']}**")
+                            with col2:
+                                st.write(f"Current: {CURRENCY}{row['Current Price']:.2f}")
+                            with col3:
+                                st.write(f"Predicted: {CURRENCY}{row['Predicted Price']:.2f}")
+                            with col4:
+                                profit_text = f"₹{row['Profit ₹']:.0f}" if row['Type'] == 'Stock' else f"${row['Profit ₹']:.0f}"
+                                st.write(f"Profit: {profit_text} ({row['Profit %']:+.1f}%)")
+                            with col5:
+                                st.write(f"Conf: {row['Confidence %']}")
+                    else:
+                        st.info("No BUY signals at this time")
+                    
+                    st.markdown("---")
+                    
+                    # Top SELL opportunities
+                    st.subheader("🔴 Top SELL Opportunities")
+                    
+                    sell_df = scan_results[scan_results['Signal'] == 'SELL'].head(5)
+                    if not sell_df.empty:
+                        for idx, row in sell_df.iterrows():
+                            col1, col2, col3, col4, col5 = st.columns(5)
+                            
+                            with col1:
+                                st.write(f"**{row['Asset']}**")
+                            with col2:
+                                st.write(f"Current: {CURRENCY}{row['Current Price']:.2f}")
+                            with col3:
+                                st.write(f"Predicted: {CURRENCY}{row['Predicted Price']:.2f}")
+                            with col4:
+                                profit_text = f"₹{row['Profit ₹']:.0f}" if row['Type'] == 'Stock' else f"${row['Profit ₹']:.0f}"
+                                st.write(f"Loss: {profit_text} ({row['Profit %']:+.1f}%)")
+                            with col5:
+                                st.write(f"Conf: {row['Confidence %']}")
+                    else:
+                        st.info("No SELL signals at this time")
+                    
+                    st.markdown("---")
+                    
+                    # Full results table
+                    st.subheader("📊 Full Scan Results")
+                    
+                    display_cols = ['Asset', 'Type', 'Current Price', 'Predicted Price', 'Change %', 'Signal', 'Profit %', 'Confidence %']
+                    st.dataframe(scan_results[display_cols], use_container_width=True)
+                    
+            except Exception as e:
+                st.error(f"❌ Scan error: {str(e)}")
+    else:
+        st.info("👉 Click 'Scan Now' to find the best trading opportunities")
 
-# (Crypto + Best Trades sections remain unchanged and fixed similarly — truncated here for length but included in actual full file)
-
+# Footer
+st.markdown("---")
 st.info("💡 **To run:** `streamlit run dashboard/app.py`")
+st.markdown("🔍 *Updates every 5 minutes | Refresh to get latest predictions*")

@@ -1,63 +1,98 @@
 import os
 import sys
 import pandas as pd
+import joblib
+import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.stock_data import get_stock_data
 from data.technical_indicators import add_indicators
-from training.prepare_data import prepare_data  # Import for feature_cols logic, but we'll replicate save logic
+from training.prepare_data import prepare_data
+from config.assets import TOP_25_STOCKS
 
-def run_pipeline(symbol='RELIANCE.NS'):
-    print(f"STEP 1: Running data pipeline for {symbol}...")
+def run_pipeline(symbols=None):
+    """
+    Fetch and prepare data for multiple stocks (default: TOP_25_STOCKS).
+    Combines all data for unified model training.
+    """
+    if symbols is None:
+        symbols = TOP_25_STOCKS
     
-    # 1. Fetch raw stock data
-    print("Fetching stock data...")
-    df = get_stock_data(symbol)
+    print(f"🚀 Hybrid Ensemble Data Pipeline for {len(symbols)} Stocks...")
+    print("=" * 60)
     
-    # 2. Add technical indicators
-    print("Adding technical indicators...")
-    df = add_indicators(df)
+    all_data = []
+    successful_symbols = []
     
-    # 3. Prepare dataset (replicate prepare_data logic for save)
-    print("Preparing dataset...")
-    df = df.dropna().copy()
-    df['Target'] = df['Close'].shift(-1)
-    df = df.dropna()
+    for symbol in symbols:
+        try:
+            print(f"📊 Processing {symbol}...")
+            
+            # Fetch raw stock data (2y for indicators)
+            df = get_stock_data(symbol, period="2y")
+            
+            # Add ALL technical indicators
+            df = add_indicators(df)
+            
+            # Add symbol column for tracking
+            df['Symbol'] = symbol
+            
+            all_data.append(df)
+            successful_symbols.append(symbol)
+            print(f"  ✓ {symbol}: {len(df)} rows")
+            
+        except Exception as e:
+            print(f"  ✗ {symbol}: {str(e)}")
     
-    # Feature columns (match prepare_data and task) - UPGRADED
-    feature_columns = [
-        'Close',
-        'RSI_14',
-        'EMA_20',
-        'SMA_50',
-        'Volume',
-        'MACD',
-        'ATR',
-        'Bollinger_Width'
-    ]
+    if not all_data:
+        raise ValueError("❌ No data fetched for any symbols!")
     
-    # Select relevant columns: Date index + features + Target
-    if 'Date' not in df.columns:
-        df = df.reset_index()
+    # Combine all data
+    print(f"\n✅ Fetched data for {len(successful_symbols)} symbols")
+    df_combined = pd.concat(all_data, ignore_index=True)
+    print(f"Total rows: {len(df_combined)}")
     
-    processed_df = df[feature_columns + ['Target'] + (['Date'] if 'Date' in df.columns else [])]
+    # Prepare FULL dataset using prepare_data
+    print("\n3. Preparing training dataset...")
+    X, y, scaler, feature_columns = prepare_data(df_combined)
     
-    # Ensure sorted by date
-    if 'Date' in processed_df.columns:
-        processed_df = processed_df.sort_values('Date').reset_index(drop=True)
+    # Create processed_df with all columns (features + Target + Date + Symbol)
+    df_prepared = pd.DataFrame(X, columns=feature_columns)
+    df_prepared['Target'] = y.values
+    
+    # Add date and symbol if available
+    if 'Date' in df_combined.columns:
+        date_series = df_combined['Date'].iloc[len(df_combined) - len(df_prepared):].reset_index(drop=True)
+        df_prepared['Date'] = date_series
+    
+    if 'Symbol' in df_combined.columns:
+        symbol_series = df_combined['Symbol'].iloc[len(df_combined) - len(df_prepared):].reset_index(drop=True)
+        df_prepared['Symbol'] = symbol_series
+    
+    # Sort by date
+    if 'Date' in df_prepared.columns:
+        df_prepared = df_prepared.sort_values('Date').reset_index(drop=True)
     else:
-        processed_df = processed_df.sort_index().reset_index(drop=True)
+        df_prepared = df_prepared.sort_index().reset_index(drop=True)
     
-    # 4. Save processed data
+    # Save
     os.makedirs('data', exist_ok=True)
     data_path = 'data/processed_data.csv'
-    processed_df.to_csv(data_path, index=False)
-    print(f"Processed data saved to {data_path}")
-    print(f"Shape: {processed_df.shape}")
-    print("Features:", feature_columns)
-    print("\nSample data:")
-    print(processed_df.tail())
+    df_prepared.to_csv(data_path, index=False)
     
-    return processed_df
+    print(f"\n✅ Processed data saved: {data_path}")
+    print(f"Shape: {df_prepared.shape}")
+    print(f"Features ({len(feature_columns)}): {feature_columns[:5]}...")
+    print(f"Symbols: {successful_symbols[:5]}...")
+    print("\nDataset Statistics:")
+    print(f"  Rows: {len(df_prepared)}")
+    print(f"  Date range: {df_prepared.get('Date', pd.Series(['N/A'])).iloc[0]} to {df_prepared.get('Date', pd.Series(['N/A'])).iloc[-1]}")
+    print(f"  Target range: {df_prepared['Target'].min():.2f} to {df_prepared['Target'].max():.2f}")
+    
+    # Save scaler and features
+    joblib.dump(scaler, 'models/scaler.pkl')  # Save to models folder
+    joblib.dump(feature_columns, 'models/feature_columns.pkl')
+    
+    return df_prepared, scaler, feature_columns
 
 if __name__ == "__main__":
     run_pipeline()

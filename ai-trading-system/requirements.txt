@@ -7,4 +7,5 @@ yfinance
 pandas_ta
 joblib
 plotly
+xgboost
 
