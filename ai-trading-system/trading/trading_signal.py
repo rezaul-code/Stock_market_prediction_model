@@ -5,7 +5,9 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import pandas as pd
 import numpy as np
-from prediction.predict import predict_next_price, predict_multi_timeframe
+# from trading.smart_signals import generate_signal, generate_multi_signal  # generate_signal is local, multi_signal defined below
+from trading.risk_manager import get_trade_recommendation
+from trading.portfolio_tracker import get_performance
 
 
 def generate_default_signal():
@@ -42,54 +44,73 @@ def generate_default_signal():
 
 def generate_signal(current_price, predicted_price):
     """
-    Generate trading signal based on price comparison
+    Generate trading signal based on price comparison.
+    
+    Args:
+        current_price: Current market price
+        predicted_price: Model's predicted price
+    
+    Returns:
+        Trading signal dict with signal, confidence, etc.
     """
-
-    # Trading logic
-    if predicted_price > current_price * 1.005:
+    
+    # Calculate prediction change
+    price_change = ((predicted_price - current_price) / current_price) * 100
+    
+    # Trading logic - now with relaxed thresholds since we have real models
+    if price_change > 1.0:  # >1% up move
         signal = "BUY"
-    elif predicted_price < current_price * 0.995:
+    elif price_change < -1.0:  # >1% down move
         signal = "SELL"
     else:
         signal = "HOLD"
-
-    confidence = min(
-        float(abs((predicted_price - current_price) / current_price) * 100), 50
-    )
-
+    
+    # Confidence based on prediction magnitude AND conviction
+    # Higher % change = higher conviction (model is more confident)
+    confidence = min(abs(price_change) * 2, 95)  # Cap at 95% for humility
+    
     return {
         "current_price": current_price,
         "predicted_price": predicted_price,
         "signal": signal,
         "confidence": f"{confidence:.2f}%",
         "confidence_float": confidence,
+        "change_pct": price_change,
     }
 
 
 def generate_multi_signal(predictions):
     """
-    Generate multi timeframe trading signals
+    Generate multi timeframe trading signals with proper confidence.
+    
+    Args:
+        predictions: Dict with predictions for different timeframes
+    
+    Returns:
+        Dict with signals and confidence for each timeframe
     """
-
     current = predictions["current_price"]
-
     signals = {}
 
     for timeframe in ["tomorrow", "weekly", "monthly", "quarterly"]:
         pred = predictions[timeframe]
+        price_change = ((pred - current) / current) * 100
 
-        if pred > current * 1.005:
+        # Trading logic with relaxed thresholds
+        if price_change > 1.0:
             signal = "BUY"
-        elif pred < current * 0.995:
+        elif price_change < -1.0:
             signal = "SELL"
         else:
             signal = "HOLD"
 
-        confidence = min(abs((pred - current) / current) * 100, 50)
+        # Confidence scales with magnitude of predicted move
+        confidence = min(abs(price_change) * 1.5, 95)  # Cap at 95%
 
         signals[f"{timeframe}_signal"] = signal
         signals[f"{timeframe}_confidence"] = f"{confidence:.2f}%"
         signals[f"{timeframe}_confidence_float"] = confidence
+        signals[f"{timeframe}_change_pct"] = price_change
 
     return signals
 

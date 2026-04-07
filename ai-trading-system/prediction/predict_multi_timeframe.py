@@ -1,96 +1,129 @@
 import numpy as np
 import pandas as pd
-import tensorflow as tf
-import os
 import joblib
+import logging
 from data.multi_asset_fetcher import fetch_asset_data
+from data.technical_indicators import add_indicators, get_feature_columns
+from training.prepare_data import create_lstm_sequences
+from .ensemble_utils import load_ensemble_models, ensemble_predict, ENSEMBLE_WEIGHTS, validate_prediction
 
-def predict_multi_timeframe(symbol):
+logging.basicConfig(level=logging.INFO, format='%(message)s')
+logger = logging.getLogger(__name__)
+
+def predict_multi_timeframe_ensemble(symbol, models, scaler, feature_columns, seq_length=60, steps_max=60):
     """
-    Multi-timeframe prediction using autoregressive forecasting.
+    Multi-timeframe prediction with proper indicator recalculation.
     
-    Returns:
-    {
-        'tomorrow': 1-step pred,
-        'weekly': 5-step pred,
-        'monthly': 20-step pred, 
-        'quarterly': 60-step pred,
-        'current_price': float
-    }
+    For each step:
+    1. Make prediction using current 60-day window
+    2. Append to temporary history
+    3. Recalculate ALL technical indicators on extended history
+    4. Continue with fresh indicators
     """
-    print(f"Multi-timeframe prediction for {symbol}...")
+    logger.info(f"🌐 Multi-timeframe ENSEMBLE prediction for {symbol}...")
     
-    # Load model and scaler (shared)
-    model_path = 'models/lstm_model.h5'
-    scaler_path = 'models/scaler.pkl'
-    
-    if not os.path.exists(model_path) or not os.path.exists(scaler_path):
-        raise FileNotFoundError("Run training first.")
-    
-    model = tf.keras.models.load_model(model_path)
-    scaler = joblib.load(scaler_path)
-    
-    feature_columns = [
-        "Close",
-        "RSI_14",
-        "MACD",
-        "ATR",
-        "Bollinger_Width"
-    ]
-    
-    seq_length = 60
-    
-    # Fetch data
     df = fetch_asset_data(symbol)
-    if len(df) < seq_length:
-        raise ValueError(f"Insufficient data for {symbol}")
+    df_clean = df.dropna()
     
-    current_price = df['Close'].iloc[-1]
+    if len(df_clean) < seq_length + 100:
+        raise ValueError(f"Insufficient data for {symbol}: {len(df_clean)} < {seq_length + 100}")
     
-    # History for autoregression: last seq_length rows
-    history = df[feature_columns].tail(seq_length).copy().reset_index(drop=True)
+    current_price = df_clean['Close'].iloc[-1]
+    logger.info(f"  📌 Current price: ₹{current_price:.2f}")
+    
+    # Get recent price range for validation (minimum clipping only - avoid EXTREME outliers)
+    recent_prices = df_clean['Close'].tail(100).values
+    min_price = recent_prices.min()
+    max_price = recent_prices.max()
     
     horizons = {
         'tomorrow': 1,
-        'weekly': 5, 
+        'weekly': 5,
         'monthly': 20,
         'quarterly': 60
     }
     
     predictions = {}
     
-    temp_history = history.copy()
-    
     for tf_name, steps in horizons.items():
-        print(f"  Predicting {tf_name} ({steps} steps)...")
+        logger.info(f"  📈 Predicting {tf_name.upper()} ({steps} days)...")
         
+        # Start with current data (keep OHLCV only, drop indicators for recalc)
+        ohlcv_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+        temp_history = df_clean[ohlcv_cols].tail(seq_length + 50).copy()
+        temp_history = temp_history.reset_index(drop=True)
+        
+        # Autoregressive prediction
         for step in range(steps):
-            # Take last seq_length for prediction
-            X_raw = temp_history[feature_columns].tail(seq_length).values
-            X_scaled = scaler.transform(X_raw)
-            X_input = X_scaled.reshape(1, seq_length, 5)
+            # Recalculate all indicators on current history
+            temp_with_indicators = add_indicators(temp_history.copy())
             
-            pred_scaled = model.predict(X_input, verbose=0)[0, 0]
+            # Get last seq_length with indicators
+            if len(temp_with_indicators) < seq_length:
+                logger.warning(f"    ⚠️  Step {step+1}: Insufficient data after indicator calc, using last price")
+                pred_price = temp_history['Close'].iloc[-1]
+            else:
+                X_raw = temp_with_indicators[feature_columns].tail(seq_length).values
+                
+                # Check for NaN
+                if np.isnan(X_raw).any():
+                    logger.warning(f"    ⚠️  Step {step+1}: NaN in features, using last price")
+                    pred_price = temp_history['Close'].iloc[-1]
+                else:
+                    try:
+                        X_scaled = scaler.transform(X_raw)
+                        X_lstm = X_scaled.reshape(1, seq_length, -1)
+                        X_tree = X_scaled.reshape(1, -1)
+                        
+                        # Ensemble prediction (WITHOUT harsh clamping via validate_prediction)
+                        pred_price = ensemble_predict(X_lstm, X_tree, models, scaler)
+                        
+                        # Only clip EXTREME outliers, not ±10%
+                        pred_price = validate_prediction(pred_price, min_price, max_price)
+                        
+                    except Exception as e:
+                        logger.warning(f"    ⚠️  Step {step+1} prediction error: {e}, using last price")
+                        pred_price = temp_history['Close'].iloc[-1]
             
-            # Inverse
-            dummy_pred = np.array([[pred_scaled, 0.0, 0.0, 0.0, 0.0]])
-            pred_price = scaler.inverse_transform(dummy_pred)[0, 0]
+            # Add new row with predicted close
+            new_row = pd.DataFrame({
+                'Open': [pred_price],
+                'High': [pred_price],
+                'Low': [pred_price],
+                'Close': [pred_price],
+                'Volume': [temp_history['Volume'].iloc[-1]]
+            })
+            temp_history = pd.concat([temp_history, new_row], ignore_index=True)
             
-            # Create new row: copy last, update Close
-            new_row = temp_history.iloc[-1].copy()
-            new_row['Close'] = pred_price
-            # Carry forward other features (approximation)
-            
-            temp_history = pd.concat([temp_history, new_row.to_frame().T], ignore_index=True)
+            logger.debug(f"      Step {step+1}: ₹{pred_price:.2f}")
         
-        predictions[tf_name] = float(pred_price)
+        final_pred = temp_history['Close'].iloc[-1]
+        change_pct = ((final_pred - current_price) / current_price) * 100
+        logger.info(f"    ✅ Results: ₹{final_pred:.2f} ({change_pct:+.2f}%)")
+        
+        predictions[tf_name] = float(final_pred)
     
     predictions['current_price'] = float(current_price)
+    predictions['ensemble_weights'] = ENSEMBLE_WEIGHTS
     
-    print("Multi-timeframe prediction complete")
+    logger.info("✅ Multi-timeframe ensemble complete!\n")
     return predictions
 
-if __name__ == "__main__": 
+def predict_multi_timeframe(symbol):
+    """Main entry - backward compatible."""
+    models = load_ensemble_models()
+    scaler = models.pop('scaler')
+    feature_columns = joblib.load('models/feature_columns.pkl')
+    
+    return predict_multi_timeframe_ensemble(symbol, models, scaler, feature_columns)
+
+if __name__ == "__main__":
     preds = predict_multi_timeframe("RELIANCE.NS")
-    print(preds)
+    logger.info("\nMulti-timeframe Ensemble Predictions:")
+    for k, v in preds.items():
+        if isinstance(v, float):
+            logger.info(f"  {k}: ₹{v:.2f}")
+        else:
+            logger.info(f"  {k}: {v}")
+
 
