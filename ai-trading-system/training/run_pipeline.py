@@ -23,13 +23,16 @@ def run_pipeline(symbol='RELIANCE.NS'):
     df['Target'] = df['Close'].shift(-1)
     df = df.dropna()
     
-    # Feature columns (match prepare_data and task)
+    # Feature columns (match prepare_data and task) - UPGRADED
     feature_columns = [
         'Close',
         'RSI_14',
         'EMA_20',
         'SMA_50',
-        'Volume'
+        'Volume',
+        'MACD',
+        'ATR',
+        'Bollinger_Width'
     ]
     
     # Select relevant columns: Date index + features + Target
